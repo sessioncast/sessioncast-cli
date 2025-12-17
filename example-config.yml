@@ -1,0 +1,28 @@
+# SessionCast Agent Configuration
+# Copy to ~/.sessioncast.yml
+
+machineId: my-machine
+relay: wss://1chk3l29.relay.sessioncast.io/ws
+token: agt_YOUR_TOKEN_HERE
+
+# Optional: API configuration for remote command execution
+api:
+  enabled: false
+  agentId: YOUR_AGENT_UUID
+
+  # Command execution settings
+  exec:
+    enabled: true
+    shell: /bin/bash
+    workingDir: ~
+    defaultTimeout: 30000
+    # allowedCommands:
+    #   - "git .*"
+    #   - "npm .*"
+
+  # LLM settings (for AI features)
+  llm:
+    enabled: false
+    provider: ollama
+    baseUrl: http://localhost:11434
+    model: llama2
