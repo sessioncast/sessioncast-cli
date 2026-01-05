@@ -1,23 +1,27 @@
-import { spawn, execSync } from 'child_process';
+import { TmuxExecutor, createTmuxExecutor, getPlatformName } from './tmux-executor';
 import { TmuxSession } from './types';
+
+// Lazy-initialized executor (created on first use)
+let executor: TmuxExecutor | null = null;
+
+/**
+ * Get or create the tmux executor for the current platform.
+ */
+function getExecutor(): TmuxExecutor {
+  if (!executor) {
+    console.log(`[tmux] Initializing on ${getPlatformName()}`);
+    executor = createTmuxExecutor();
+    const version = executor.getVersion();
+    console.log(`[tmux] Version: ${version}`);
+  }
+  return executor;
+}
 
 /**
  * Scan for all tmux sessions
  */
 export function scanSessions(): string[] {
-  try {
-    const output = execSync('tmux ls -F "#{session_name}"', {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
-    return output
-      .trim()
-      .split('\n')
-      .filter(s => s.length > 0);
-  } catch {
-    // tmux not running or no sessions
-    return [];
-  }
+  return getExecutor().listSessions();
 }
 
 /**
@@ -25,24 +29,13 @@ export function scanSessions(): string[] {
  */
 export function listSessions(): TmuxSession[] {
   try {
-    const output = execSync(
-      'tmux list-sessions -F "#{session_name}|#{session_windows}|#{session_created}|#{session_attached}"',
-      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
-    );
-
-    return output
-      .trim()
-      .split('\n')
-      .filter(line => line.length > 0)
-      .map(line => {
-        const [name, windows, created, attached] = line.split('|');
-        return {
-          name,
-          windows: parseInt(windows, 10) || 1,
-          created: created || undefined,
-          attached: attached === '1'
-        };
-      });
+    const sessions = getExecutor().listSessions();
+    // For now, return basic info (detailed info would require additional tmux commands)
+    return sessions.map(name => ({
+      name,
+      windows: 1,
+      attached: false
+    }));
   } catch {
     return [];
   }
@@ -52,57 +45,45 @@ export function listSessions(): TmuxSession[] {
  * Capture tmux pane content with escape sequences (colors)
  */
 export function capturePane(sessionName: string): string | null {
-  try {
-    const output = execSync(`tmux capture-pane -t "${sessionName}" -p -e -N`, {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      maxBuffer: 10 * 1024 * 1024 // 10MB
-    });
-    // Normalize line endings
-    return output.replace(/\n/g, '\r\n');
-  } catch {
-    return null;
-  }
+  return getExecutor().capturePane(sessionName);
 }
 
 /**
  * Send keys to tmux session
  */
 export function sendKeys(target: string, keys: string, enter: boolean = true): boolean {
+  const exec = getExecutor();
+
   try {
     // Handle special keys
     if (keys === '\x03') {
       // Ctrl+C
-      execSync(`tmux send-keys -t "${target}" C-c`, { stdio: 'pipe' });
-      return true;
+      return exec.sendSpecialKey(target, 'C-c');
     }
     if (keys === '\x04') {
       // Ctrl+D
-      execSync(`tmux send-keys -t "${target}" C-d`, { stdio: 'pipe' });
-      return true;
+      return exec.sendSpecialKey(target, 'C-d');
     }
 
     // For Enter key only
     if (keys === '\n' || keys === '\r\n') {
-      execSync(`tmux send-keys -t "${target}" Enter`, { stdio: 'pipe' });
-      return true;
+      return exec.sendSpecialKey(target, 'Enter');
     }
 
     // For text with newline at end (command + enter)
     if (keys.endsWith('\n')) {
       const cmd = keys.slice(0, -1);
       if (cmd) {
-        execSync(`tmux send-keys -t "${target}" -l "${escapeForShell(cmd)}"`, { stdio: 'pipe' });
+        exec.sendKeys(target, cmd);
       }
-      execSync(`tmux send-keys -t "${target}" Enter`, { stdio: 'pipe' });
-      return true;
+      return exec.sendSpecialKey(target, 'Enter');
     }
 
     // Regular text input
-    execSync(`tmux send-keys -t "${target}" -l "${escapeForShell(keys)}"`, { stdio: 'pipe' });
+    exec.sendKeys(target, keys);
 
     if (enter) {
-      execSync(`tmux send-keys -t "${target}" Enter`, { stdio: 'pipe' });
+      exec.sendSpecialKey(target, 'Enter');
     }
     return true;
   } catch {
@@ -114,45 +95,41 @@ export function sendKeys(target: string, keys: string, enter: boolean = true): b
  * Resize tmux window
  */
 export function resizeWindow(sessionName: string, cols: number, rows: number): boolean {
-  try {
-    execSync(`tmux resize-window -t "${sessionName}" -x ${cols} -y ${rows}`, { stdio: 'pipe' });
-    return true;
-  } catch {
-    return false;
-  }
+  return getExecutor().resizeWindow(sessionName, cols, rows);
 }
 
 /**
  * Create new tmux session
  */
-export function createSession(sessionName: string): boolean {
-  try {
-    // Sanitize session name
-    const sanitized = sessionName.replace(/[^a-zA-Z0-9_-]/g, '_');
-    if (!sanitized) return false;
-
-    execSync(`tmux new-session -d -s "${sanitized}"`, { stdio: 'pipe' });
-    return true;
-  } catch {
-    return false;
-  }
+export function createSession(sessionName: string, workingDir?: string): boolean {
+  return getExecutor().createSession(sessionName, workingDir);
 }
 
 /**
  * Kill tmux session
  */
 export function killSession(sessionName: string): boolean {
+  return getExecutor().killSession(sessionName);
+}
+
+/**
+ * Check if tmux is available
+ */
+export function isAvailable(): boolean {
   try {
-    execSync(`tmux kill-session -t "${sessionName}"`, { stdio: 'pipe' });
-    return true;
+    return getExecutor().isAvailable();
   } catch {
     return false;
   }
 }
 
 /**
- * Escape string for shell
+ * Get tmux version
  */
-function escapeForShell(str: string): string {
-  return str.replace(/"/g, '\\"').replace(/\$/g, '\\$').replace(/`/g, '\\`');
+export function getVersion(): string | null {
+  try {
+    return getExecutor().getVersion();
+  } catch {
+    return null;
+  }
 }
